@@ -1,0 +1,15 @@
+#!/bin/bash
+
+PORT={{ rustfs_lb_api_port }}
+
+if ! pidof haproxy > /dev/null; then
+    echo "HAProxy process is not running"
+    exit 1
+fi
+
+if ! ss -ltn | grep -q ":${PORT}"; then
+    echo "HAProxy is not listening on port ${PORT}"
+    exit 2
+fi
+
+exit 0

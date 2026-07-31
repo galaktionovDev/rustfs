@@ -1,0 +1,52 @@
+---
+- name: RustFS scale-out prechecks (fail-fast)
+  hosts: "{{ rustfs_cluster_nodes_group | default('node') }}"
+  become: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: Ensure HA mode
+      ansible.builtin.assert:
+        that:
+          - rustfs_cluster_mode == 'High Availability'
+        fail_msg: "Масштабирование кластера разрешено только в режиме High Availability."
+
+    - name: Compute new nodes count from inventory
+      ansible.builtin.set_fact:
+        rustfs_new_nodes_count: >-
+          {{
+            (groups[rustfs_cluster_nodes_group | default('node')] | default([]) | length)
+            - (rustfs_node_count | default(0) | int)
+          }}
+
+    - name: Validate new nodes count is 2..4
+      ansible.builtin.assert:
+        that:
+          - (rustfs_new_nodes_count | int) >= 2
+          - (rustfs_new_nodes_count | int) <= 4
+        fail_msg: "По правилам отказоустойчивости за один проход можно добавить только от 2 до 4 узлов."
+
+- name: RustFS scale-out (add new storage segment)
+  hosts: "{{ rustfs_cluster_nodes_group | default('node') }}"
+  become: true
+  any_errors_fatal: true
+  
+  tasks:
+    - name: Run role tasks for scale-out only
+      ansible.builtin.import_role:
+        name: rustfs_server
+        tasks_from: scale_out.yml
+
+- name: RustFS LB reconfigure after scale-out
+  hosts: "{{ rustfs_lb_group | default('lb') }}"
+  become: true
+  any_errors_fatal: true
+  
+  tasks:
+    - name: Rebuild HAProxy backends after scale-out
+      when:
+        - rustfs_enable_lb | default(false) | bool
+        - (groups[rustfs_lb_group | default('lb')] | default([])) | length > 0
+      ansible.builtin.import_role:
+        name: rustfs_server
+        tasks_from: rustfs_lb.yml

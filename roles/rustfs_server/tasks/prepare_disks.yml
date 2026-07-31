@@ -1,0 +1,83 @@
+---
+- name: Собрать список блочных устройств без монтирования
+  ansible.builtin.command: lsblk -dn -o NAME,TYPE,MOUNTPOINT
+  register: _rustfs_lsblk
+  changed_when: false
+
+- name: Сформировать перечень доступных дисков
+  vars:
+    _rows: "{{ _rustfs_lsblk.stdout_lines | default([]) }}"
+  ansible.builtin.set_fact:
+    _rustfs_all_disks: >-
+      {{
+        _rows
+        | map('split')
+        | map('list')
+        | selectattr('1', 'equalto', 'disk')
+        | map('first')
+        | map('regex_replace', '^', '/dev/')
+        | list
+      }}
+  changed_when: false
+
+- name: Исключить системные устройства хранения
+  ansible.builtin.set_fact:
+    rustfs_preconf_data_devices: >-
+      {{
+        _rustfs_all_disks
+        | reject('match', '^/dev/vda$')
+        | reject('match', '^/dev/sda$')
+        | reject('match', '^/dev/nvme0n1$')
+        | list
+      }}
+  changed_when: false
+
+- name: Определить смонтированные каталоги RustFS
+  ansible.builtin.set_fact:
+    _rustfs_current_mounts: "{{ ansible_mounts | map(attribute='mount') | list }}"
+    _rustfs_required_datadirs: "{{ rustfs_server_datadirs | default([]) }}"
+  changed_when: false
+
+- name: Выявить каталоги, требующие подготовки
+  ansible.builtin.set_fact:
+    _rustfs_datadirs_to_prepare: "{{ _rustfs_required_datadirs | difference(_rustfs_current_mounts) }}"
+  changed_when: false
+
+- name: Пропустить подготовку, если каталоги уже смонтированы
+  ansible.builtin.set_fact:
+    _rustfs_skip_disk_prepare: true
+  when: _rustfs_datadirs_to_prepare | length == 0
+  changed_when: false
+
+- name: Проверить соответствие количества устройств
+  ansible.builtin.assert:
+    that:
+      - rustfs_preconf_data_devices | length >= _rustfs_datadirs_to_prepare | length
+    fail_msg: "Нужно устройств не меньше, чем несмонтированных каталогов: {{ _rustfs_datadirs_to_prepare }}"
+  when: not (_rustfs_skip_disk_prepare | default(false))
+
+- name: Сопоставить устройства и каталоги
+  ansible.builtin.set_fact:
+    _rustfs_device_mount_pairs: >-
+      {%- set pairs = [] -%}
+      {%- for idx in range(0, _rustfs_datadirs_to_prepare | length) -%}
+        {%- set _ = pairs.append({'key': rustfs_preconf_data_devices[idx], 'value': _rustfs_datadirs_to_prepare[idx]}) -%}
+      {%- endfor -%}
+      {{ pairs }}
+  when: not (_rustfs_skip_disk_prepare | default(false))
+  changed_when: false
+
+- name: Подготовить оставшиеся диски
+  ansible.builtin.include_tasks: disks_prepare_single.yml
+  loop: "{{ _rustfs_device_mount_pairs }}"
+  when: not (_rustfs_skip_disk_prepare | default(false))
+
+- name: Назначить владельца каталогов данных RustFS
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ rustfs_user | default('rustfs') }}"
+    group: "{{ rustfs_group | default('rustfs') }}"
+    mode: "0750"
+  loop: "{{ rustfs_server_datadirs | default([]) }}"
+  when: (rustfs_server_datadirs | default([])) | length > 0

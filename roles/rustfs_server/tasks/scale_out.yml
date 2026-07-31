@@ -1,0 +1,96 @@
+---
+# --- ШАГ 1: АВТООПРЕДЕЛЕНИЕ ТЕКУЩЕГО СОСТОЯНИЯ КЛАСТЕРА ---
+
+- name: Проверить, установлена ли уже служба RustFS на узлах
+  ansible.builtin.stat:
+    path: /etc/systemd/system/rustfs.service
+  register: _rustfs_service_check
+
+- name: Автоматически сформировать списки старых и новых хостов
+  run_once: true
+  vars:
+    _all_hosts: "{{ groups[rustfs_cluster_nodes_group | default('node')] | sort }}"
+    # Отбираем хосты, у которых файл службы уже существует
+    _existing_hosts: >-
+      {%- set existing = [] -%}
+      {%- for h in _all_hosts -%}
+      {%-   if hostvars[h]['_rustfs_service_check']['stat']['exists'] | default(false) -%}
+      {%-     set _ = existing.append(h) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ existing }}
+  ansible.builtin.set_fact:
+    rustfs_all_hosts: "{{ _all_hosts }}"
+    rustfs_existing_hosts: "{{ _existing_hosts }}"
+    rustfs_new_hosts: "{{ _all_hosts | difference(_existing_hosts) | list }}"
+    rustfs_primary_host: "{{ _existing_hosts | first | default(_all_hosts | first) }}"
+
+- name: Проверить, что мы нашли новые узлы для добавления
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - (hostvars[rustfs_primary_host].rustfs_new_hosts | length) > 0
+    fail_msg: "В инвентаре не найдено новых узлов. Все узлы уже содержат установленную службу RustFS."
+
+- name: Собрать карту дисков для всех узлов кластера
+  when: inventory_hostname == rustfs_primary_host
+  vars:
+    _all: "{{ rustfs_all_hosts | default([]) }}"
+  ansible.builtin.set_fact:
+    rustfs_drives_map: >-
+      {%- set m = {} -%}
+      {%- for h in _all -%}
+      {%-   set disks = hostvars[h].rustfs_extra_disks | default([]) | map(attribute='mount') | list -%}
+      {%-   set _ = m.update({ h: disks }) -%}
+      {%- endfor -%}
+      {{ m }}
+
+- name: Распределить вычисленные факты топологии по всем узлам кластера
+  ansible.builtin.set_fact:
+    rustfs_all_hosts: "{{ hostvars[rustfs_primary_host].rustfs_all_hosts }}"
+    rustfs_existing_hosts: "{{ hostvars[rustfs_primary_host].rustfs_existing_hosts }}"
+    rustfs_new_hosts: "{{ hostvars[rustfs_primary_host].rustfs_new_hosts }}"
+    rustfs_drives_map: "{{ hostvars[rustfs_primary_host].rustfs_drives_map }}"
+
+- name: Собрать пути к дата-дискам на новых узлах
+  ansible.builtin.set_fact:
+    rustfs_server_datadirs: "{{ rustfs_extra_disks | map(attribute='mount') | list }}"
+  when:
+    - inventory_hostname in (rustfs_new_hosts | default([]))
+    - (rustfs_extra_disks | default([])) | length > 0
+
+# --- ШАГ 2: РАБОТА С НОВЫМИ УЗЛАМИ ---
+
+- name: Установить серверную часть RustFS на новые узлы
+  ansible.builtin.include_tasks: install_server.yml
+  when: inventory_hostname in (rustfs_new_hosts | default([]))
+
+- name: Подготовить локальные диски на новых узлах
+  ansible.builtin.include_tasks: prepare_disks.yml
+  when: inventory_hostname in (rustfs_new_hosts | default([]))
+
+- name: Установить клиент утилиты rc на новые узлы
+  ansible.builtin.include_tasks: install_client.yml
+  when: inventory_hostname in (rustfs_new_hosts | default([]))
+
+- name: Обновить локальный /etc/hosts на всех узлах кластера
+  ansible.builtin.include_tasks: rustfs_hosts.yml
+  when: inventory_hostname in (rustfs_all_hosts | default(ansible_play_hosts_all))
+
+# --- ШАГ 3: СИНХРОННЫЙ ПЕРЕЗАПУСК И ПРИМЕНЕНИЕ ТОПОЛОГИИ ---
+
+- name: Остановить службу RustFS на всём кластере для расширения
+  ansible.builtin.systemd:
+    name: rustfs
+    state: stopped
+  when: inventory_hostname in (rustfs_all_hosts | default(ansible_play_hosts_all))
+
+- name: Применить обновлённую конфигурацию топологии на всех узлах
+  ansible.builtin.include_tasks: configure_server.yml
+  when: inventory_hostname in (rustfs_all_hosts | default(ansible_play_hosts_all))
+
+- name: Запустить службу RustFS с новыми узлами
+  ansible.builtin.systemd:
+    name: rustfs
+    state: started
+  when: inventory_hostname in (rustfs_all_hosts | default(ansible_play_hosts_all))

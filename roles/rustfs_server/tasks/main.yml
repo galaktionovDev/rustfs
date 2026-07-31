@@ -1,0 +1,36 @@
+---
+- name: Собрать каталоги данных из дополнительных дисков
+  ansible.builtin.set_fact:
+    rustfs_server_datadirs: "{{ rustfs_extra_disks | map(attribute='mount') | list }}"
+  when: (rustfs_extra_disks | default([])) | length > 0
+  changed_when: false
+
+- name: Создать системную группу RustFS
+  ansible.builtin.group:
+    name: "{{ rustfs_group }}"
+    state: present
+
+- name: Создать системного пользователя RustFS
+  ansible.builtin.user:
+    name: "{{ rustfs_user }}"
+    group: "{{ rustfs_group }}"
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Подготовить диски данных (XFS + fstab)
+  ansible.builtin.include_tasks: prepare_disks.yml
+
+- name: Настроить /etc/hosts для RustFS
+  ansible.builtin.include_tasks: rustfs_hosts.yml
+
+- name: Установить пакет RustFS Server (Распаковка архива)
+  ansible.builtin.include_tasks: install.yml
+  when: rustfs_install_server | bool
+
+- name: Настроить конфигурацию и службу RustFS Server
+  ansible.builtin.include_tasks: configure.yml
+  when: rustfs_install_server | bool
+
+- name: Опубликовать итоговые данные по установке RustFS для графа
+  ansible.builtin.include_tasks: stats.yml

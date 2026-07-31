@@ -1,0 +1,121 @@
+---
+- name: Создать изолированного системного пользователя для скриптов Keepalived
+  become: true
+  ansible.builtin.user:
+    name: keepalived_script
+    system: true
+    shell: /bin/false
+    create_home: false
+
+- name: Гарантировать создание каталогов конфигурации
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/haproxy
+    - /etc/haproxy/errors
+    - /etc/keepalived
+
+- name: Создать скрипт проверки статуса HAProxy (Healthcheck)
+  become: true
+  ansible.builtin.template:
+    src: check_haproxy.sh.j2
+    dest: /etc/keepalived/check_haproxy.sh
+    mode: '0750'
+    owner: keepalived_script
+    group: keepalived_script
+
+- name: Сгенерировать конфигурационный файл HAProxy
+  become: true
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+  register: _haproxy_config
+
+- name: Сгенерировать конфигурационный файл Keepalived
+  become: true
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+  register: _keepalived_config
+
+- name: Собрать информацию об установленных менеджерах пакетов
+  ansible.builtin.package_facts:
+    manager: auto
+
+- name: Открыть порты балансировщика и VRRP протокол в Firewalld (Red OS)
+  become: true
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    state: enabled
+    permanent: true
+    immediate: true
+  loop:
+    - "{{ rustfs_lb_api_port }}"
+    - "{{ rustfs_lb_console_port }}"
+    - "{{ haproxy_port }}"
+  when: "'firewalld' in ansible_facts.packages"
+
+- name: Разрешить трафик VRRP (протокол 112) в Firewalld для Keepalived
+  become: true
+  ansible.posix.firewalld:
+    rich_rule: rule protocol value="112" accept
+    state: enabled
+    permanent: true
+    immediate: true
+  when:
+    - "'firewalld' in ansible_facts.packages"
+    - ansible_distribution.split(' ') | first | lower in ['red', 'almalinux', 'centos']
+
+- name: Открыть порты балансировщика в UFW (Debian / Ubuntu)
+  become: true
+  community.general.ufw:
+    rule: allow
+    port: "{{ item | string }}"
+  loop:
+    - "{{ rustfs_lb_api_port }}"
+    - "{{ rustfs_lb_console_port }}"
+    - "{{ haproxy_port }}"
+  when: "'ufw' in ansible_facts.packages"
+
+- name: Разрешить входящий мультикаст VRRP в UFW
+  become: true
+  community.general.ufw:
+    rule: allow
+    direction: in
+    to_ip: "224.0.0.18"
+  when: "'ufw' in ansible_facts.packages"
+
+- name: Разрешить HAProxy привязываться к плавающему нелокальному IP (sysctl)
+  become: true
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_nonlocal_bind
+    value: '1'
+    sysctl_set: true
+    state: present
+    reload: true
+
+- name: Настроить политики безопасности SELinux для HAProxy
+  become: true
+  when:
+    - ansible_selinux is defined
+    - ansible_selinux.status != 'disabled'
+  block:
+    - name: Задать контекст http_port_t для портов RustFS и HAProxy
+      community.general.seport:
+        ports: "{{ item }}"
+        proto: tcp
+        setype: http_port_t
+        state: present
+      loop:
+        - "{{ rustfs_lb_api_port | int }}"
+        - "{{ rustfs_lb_console_port | int }}"
+        - "{{ haproxy_port | int }}"
+
+    - name: Разрешить балансировщику HAProxy отправлять сетевые запросы к бэкендам (connect_any)
+      ansible.builtin.seboolean:
+        name: haproxy_connect_any
+        state: true
+        persistent: true

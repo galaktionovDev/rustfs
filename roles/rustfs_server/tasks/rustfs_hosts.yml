@@ -1,0 +1,37 @@
+---
+- name: Построить карту rustfs-хостов (run_once)
+  run_once: true
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    rustfs_hosts_map: >-
+      {%- set m = {} -%}
+      {%- set nodes_g = rustfs_cluster_nodes_group | default('rustfs_nodes') -%}
+      {%- set hosts = groups[nodes_g] if (groups[nodes_g] is defined and (groups[nodes_g] | length) > 0) else ansible_play_hosts_all -%}
+      {%- set hosts_sorted = hosts | sort -%}
+      {%- for h in hosts_sorted -%}
+        {%- set idx = loop.index -%}
+        {%- set ip = (
+              hostvars[h].rustfs_node_ip
+              | default(hostvars[h].ansible_host)
+              | default(hostvars[h].ansible_default_ipv4.address)
+              | default(h)
+            ) -%}
+        {%- set _ = m.update({('node-' ~ idx|string): ip}) -%}
+      {%- endfor -%}
+      {{ m }}
+
+- name: Расшарить карту rustfs-хостов на все ноды
+  ansible.builtin.set_fact:
+    rustfs_hosts_map: >-
+      {%- set nodes_g = rustfs_cluster_nodes_group | default('rustfs_nodes') -%}
+      {%- set first_h = (groups[nodes_g] if (groups[nodes_g] is defined and (groups[nodes_g] | length) > 0) else ansible_play_hosts_all) | first -%}
+      {{ hostvars[first_h].rustfs_hosts_map }}
+
+- name: Прописать чистые node-хосты в /etc/hosts
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    create: yes
+    regexp: '^[0-9.]+\s+{{ item.key }}$'
+    line: "{{ item.value }} {{ item.key }}"
+  loop: "{{ rustfs_hosts_map | dict2items }}"

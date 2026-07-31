@@ -1,0 +1,94 @@
+---
+- name: Создать каталоги конфигурации и логов RustFS
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ rustfs_user }}"
+    group: "{{ rustfs_group }}"
+    mode: "0750"
+  loop:
+    - "{{ rustfs_etc_dir }}"
+    - "{{ rustfs_log_dir }}"
+
+- name: Гарантировать права на каталоги данных хранения
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ rustfs_user }}"
+    group: "{{ rustfs_group }}"
+    mode: "0750"
+  loop: "{{ rustfs_server_datadirs }}"
+
+- name: Сгенерировать файл окружения для RustFS
+  ansible.builtin.template:
+    src: rustfs.env.j2
+    dest: "{{ rustfs_etc_dir }}/rustfs.env"
+    owner: "{{ rustfs_user }}"
+    group: "{{ rustfs_group }}"
+    mode: "0640"
+  register: _rustfs_env
+  notify: Перезапустить службу RustFS
+
+- name: Разместить unit systemd для RustFS
+  ansible.builtin.template:
+    src: rustfs.service.j2
+    dest: /etc/systemd/system/rustfs.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: _rustfs_service_unit
+  notify: Перезапустить службу RustFS
+
+- name: SELinux | Задать правильный контекст безопасности для бинарника RustFS
+  community.general.sefcontext:
+    target: "{{ rustfs_bin_dir }}/rustfs"
+    setype: bin_t
+    state: present
+  register: _rustfs_bin_secontext
+  when: ansible_distribution.split(' ') | first | lower == 'red'
+
+- name: SELinux | Применить контекст безопасности к бинарнику (restorecon)
+  ansible.builtin.command: "restorecon -v {{ rustfs_bin_dir }}/rustfs"
+  when: 
+    - ansible_distribution.split(' ') | first | lower == 'red'
+    - _rustfs_bin_secontext.changed
+  changed_when: true
+
+- name: SELinux | Задать контекст безопасности для каталога логов (Предотвращение 209/STDOUT)
+  community.general.sefcontext:
+    target: "{{ rustfs_log_dir }}(/.*)?"
+    setype: var_log_t
+    state: present
+  register: _rustfs_log_secontext
+  when: ansible_distribution.split(' ') | first | lower == 'red'
+
+- name: SELinux | Рекурсивно применить контекст к каталогу логов (restorecon -R)
+  ansible.builtin.command: "restorecon -R -v {{ rustfs_log_dir }}"
+  when: 
+    - ansible_distribution.split(' ') | first | lower == 'red'
+    - _rustfs_log_secontext.changed
+  changed_when: true
+
+- name: Открыть порты RustFS в Firewalld (Red OS)
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    state: enabled
+  loop:
+    - "{{ rustfs_api_port }}"
+    - "{{ rustfs_console_port }}"
+  when: ansible_distribution.split(' ') | first | lower == 'red'
+
+- name: Перезапуск правил Firewalld для обновления таблиц nftables
+  ansible.builtin.systemd:
+    name: firewalld
+    state: reloaded
+  when: ansible_distribution.split(' ') | first | lower == 'red'
+
+- name: Включить и запустить службу RustFS
+  ansible.builtin.systemd:
+    name: rustfs
+    enabled: true
+    state: "{{ 'restarted' if (_rustfs_env.changed or _rustfs_service_unit.changed) else 'started' }}"
+    daemon_reload: true
+  when: rustfs_autostart | bool

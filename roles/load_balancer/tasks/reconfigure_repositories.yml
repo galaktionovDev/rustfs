@@ -1,0 +1,74 @@
+---
+
+- name: Собираем ansible_distribution факты
+  setup:
+    filter:
+      - ansible_distribution
+      - ansible_distribution_major_version
+      - ansible_distribution_version
+
+- name: Определите версию EL репозитория cld (RED OS 8 соответствует el9)
+  set_fact:
+    cld_repo_el: "{{ 'el9' if (ansible_distribution.split(' ') | first | lower == 'red' and ansible_distribution_major_version == '8') else 'el' ~ ansible_distribution_major_version }}"
+  when: ansible_distribution.split(' ') | first | lower in ['red', 'almalinux', 'centos']
+
+- name: Установить репозиторий для Ubuntu
+  apt_repository:
+    repo: "{{ item.repo }}"
+    state: "{{ item.state }}"
+  loop:
+    - repo: "deb {{ nexus_url }}/repository/products-apt/ focal main"
+      state: absent
+    - repo: "deb {{ nexus_url }}/repository/products-apt-ubuntu-{{ ansible_distribution_major_version }}/ {{ 'jammy' if ansible_distribution_major_version == '22' else 'noble' }} main"
+      state: present
+  when: ansible_distribution.split(' ') | first | lower in ['ubuntu']
+
+- name: Установить репозиторий для AstraLinux 1.7
+  become: true
+  lineinfile:
+    path: /etc/apt/sources.list.d/cld-repository.list
+    regexp: "^deb"
+    line: "deb {{ nexus_url }}/repository/products-apt-alse-1-7/ main main"
+    insertafter: EOF
+    state: present
+  when: ansible_distribution.split(' ') | first | lower in ['astra'] and ansible_distribution_version == '1.7_x86-64'
+
+- name: Установить репозиторий для AstraLinux 1.8
+  apt_repository:
+    repo: "{{ item.repo }}"
+    state: "{{ item.state }}"
+  loop:
+    - repo: "deb {{ nexus_url }}/repository/products-apt/ focal main"
+      state: absent
+    - repo: "deb {{ nexus_url }}/repository/products-apt-alse-{{ ansible_distribution_major_version }}-{{ ansible_distribution_version.split('.')[1][0] }}/ main main"
+      state: present
+  when: ansible_distribution.split(' ') | first | lower in ['astra'] and ansible_distribution_version == '1.8_x86-64'
+
+- name: Установить репозиторий для Debian
+  apt_repository:
+    repo: "{{ item.repo }}"
+    state: "{{ item.state }}"
+  loop:
+    - repo: "deb {{ nexus_url }}/repository/products-apt/ focal main"
+      state: absent
+    - repo: "deb {{ nexus_url }}/repository/products-apt-debian-{{ ansible_distribution_major_version }}/ bullseye main"
+      state: present
+  when: ansible_distribution.split(' ') | first | lower in ['debian']
+
+- name: Настройка репозитория cld для RHEL-семейства (RED OS 8 -> el9)
+  yum_repository:
+    name: "cld-repository-{{ cld_repo_el }}"
+    baseurl: "{{ nexus_url }}/repository/products-yum/{{ cld_repo_el }}/"
+    description: "A repository for {{ cld_repo_el }} packages"
+    enabled: true
+    gpgcheck: false
+    module_hotfixes: true
+  when: ansible_distribution.split(' ') | first | lower in ['red', 'almalinux', 'centos']
+
+- name: Удалите устаревший репозиторий el8 cld в RED OS 8 (очистка после переноса)
+  file:
+    path: /etc/yum.repos.d/cld-repository-el8.repo
+    state: absent
+  when:
+    - ansible_distribution.split(' ') | first | lower == 'red'
+    - ansible_distribution_major_version == '8'

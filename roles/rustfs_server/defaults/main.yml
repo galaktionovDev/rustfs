@@ -1,0 +1,45 @@
+---
+rustfs_install_server: true
+rustfs_autostart: true
+
+rustfs_bin_dir: "/usr/local/bin"
+rustfs_etc_dir: "/etc/default/rustfs"
+rustfs_log_dir: "/var/log/rustfs"
+rustfs_installer_dir: "/opt/rustfs/install"
+
+rustfs_user: "rustfs"
+rustfs_group: "rustfs"
+
+rustfs_preconf_data_devices: []
+rustfs_server_datadirs: []
+rustfs_extra_disks: []
+rustfs_preconf_wipe_disks: false
+rustfs_server_cluster_nodes: []
+rustfs_cluster_nodes_group: "node"
+rustfs_lb_group: "lb"
+rustfs_scheme: "http"
+rustfs_enable_lb: false
+rustfs_lb_api_domain: ""
+rustfs_lb_console_domain: ""
+
+rustfs_lb_api_port: "{{ rustfs_server_port | default(9000) }}"
+rustfs_lb_console_port: "{{ rustfs_console_port | default(9001) }}"
+
+rustfs_cluster_mode_effective: "{{ rustfs_cluster_mode | default('Single Instance') }}"
+
+rustfs_api_port: "9000"
+rustfs_console_port: "9001"
+
+rustfs_cluster_mode: "Single Instance"
+
+rustfs_url: ""
+rustfs_root_user: ""
+rustfs_root_password: ""
+
+rustfs_version: "{{ rustfs_version }}"
+rustfs_archive_url: "{{ nexus_url }}/repository/products-raw/rustfs/rustfs-linux-x86_64-musl-{{ rustfs_version }}.tar.gz"
+
+rustfs_log_level: "error"
+rustfs_console_enable: "true"
+
+rustfs_unsafe_bypass_disk_check: false

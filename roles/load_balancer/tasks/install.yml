@@ -1,0 +1,40 @@
+---
+- name: Собрать факты о дистрибутиве операционной системы
+  ansible.builtin.setup:
+    filter:
+      - ansible_distribution
+      - ansible_distribution_major_version
+
+- name: Обновить репозитории ОС для балансировщиков нагрузки
+  become: true
+  ansible.builtin.import_tasks: reconfigure_repositories.yml
+  ignore_errors: true
+  tags:
+    - reconfigure-repositories
+    - always
+
+- name: Определить версию CLD репозитория (RED OS 8 соответствует el9)
+  ansible.builtin.set_fact:
+    cld_repo_el: "{{ 'el9' if (ansible_distribution.split(' ') | first | lower == 'red' and ansible_distribution_major_version == '8') else 'el' ~ ansible_distribution_major_version }}"
+  when: ansible_distribution.split(' ') | first | lower in ['red', 'almalinux', 'centos']
+
+- name: Установить пакеты HAProxy, Keepalived и утилиты SELinux для Red OS / RHEL
+  become: true
+  ansible.builtin.yum:
+    name:
+      - haproxy
+      - keepalived
+      - python3-policycoreutils
+    state: present
+    enablerepo: "{{ 'cld-repository-el9' if (ansible_distribution.split(' ') | first | lower == 'red' and ansible_distribution_major_version == '8') else 'cld-repository-el' + ansible_distribution_major_version }}"
+    disablerepo: "*"
+  when: ansible_distribution.split(' ') | first | lower in ['red', 'almalinux', 'centos']
+
+- name: Установить пакеты HAProxy и Keepalived для Debian / Ubuntu / Астра Линукс
+  become: true
+  ansible.builtin.apt:
+    name:
+      - haproxy
+      - keepalived
+    state: present
+  when: ansible_distribution.split(' ') | first | lower in ['ubuntu', 'astra', 'debian']
