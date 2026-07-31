@@ -1,0 +1,123 @@
+---
+- name: Собрать список узлов кластера RustFS
+  run_once: true
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _hosts: "{{ groups[rustfs_cluster_nodes_group] if rustfs_cluster_nodes_group is defined else ansible_play_hosts_all }}"
+    _first_host: "{{ (groups[rustfs_cluster_nodes_group] if rustfs_cluster_nodes_group is defined else ansible_play_hosts_all) | first }}"
+
+- name: Инициализировать параметры балансировщика для RustFS
+  run_once: true
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _lb_hosts: []
+    _lb_host: ''
+    _lb_addr: ''
+
+- name: Собрать список балансировщиков (если включен LB)
+  when:
+    - rustfs_enable_lb | default(false) | bool
+    - (groups[rustfs_lb_group] | default([])) | length > 0
+  run_once: true
+  delegate_to: localhost
+  vars:
+    lb_hosts: "{{ groups[rustfs_lb_group] | default([]) }}"
+    lb_host: "{{ (groups[rustfs_lb_group] | default([])) | first }}"
+  ansible.builtin.set_fact:
+    _lb_hosts: "{{ lb_hosts }}"
+    _lb_host: "{{ lb_host }}"
+    _lb_addr: >-
+      {{
+        rustfs_entrypoint_address
+        | default(hostvars[lb_host].ansible_host)
+        | default(hostvars[lb_host].ansible_default_ipv4.address)
+        | default(lb_host)
+      }}
+
+- name: Определить параметры первого узла кластера RustFS
+  run_once: true
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _first_addr: >-
+      {{
+        hostvars[_first_host].ansible_host
+        | default(hostvars[_first_host].ansible_default_ipv4.address)
+        | default(_first_host)
+      }}
+    _scheme: "{{ rustfs_scheme | default('http') }}"
+    _api_port: "{{ rustfs_server_port | default('9000') }}"
+    _console_port: "{{ rustfs_console_port | default('9001') }}"
+    _lb_api_domain: "{{ rustfs_lb_api_domain | default('') }}"
+    _lb_console_domain: "{{ rustfs_lb_console_domain | default('') }}"
+    _first_mounts: "{{ hostvars[_first_host].rustfs_server_datadirs | default([]) }}"
+
+- name: Вычислить итоговые параметры URL, режима и дисков
+  run_once: true
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    cluster_mode: >-
+      {{
+        'ha'
+        if (
+          (rustfs_cluster_mode_effective | default(rustfs_cluster_mode | default(''))) in [
+            'ha', 'distributed', 'cluster', 'erasure', 'erasure-coded', 'high-availability'
+          ]
+          or ((_hosts | length) | int > 1)
+        )
+        else 'single'
+      }}
+    rustfs_node_count: "{{ (_hosts | length) | int }}"
+    rustfs_drives_per_node: "{{ (_first_mounts | length) if (_first_mounts | length) else 1 }}"
+    inventory_first_host: "{{ _first_host }}"
+    
+    connection_url: >-
+      {%- set lb_enabled = rustfs_enable_lb | default(false) | bool -%}
+      {%- set lb_candidate = _lb_api_domain if (_lb_api_domain | length) > 0 else _lb_addr -%}
+      {%- set host = lb_candidate if (lb_enabled and (lb_candidate | length) > 0) else (_first_addr if not dns_zone else ansible_hostname + '.' + dns_zone) -%}
+      {%- set scheme = _scheme -%}
+      {%- set port = _api_port -%}
+      {%- if '://' in host -%}
+        {%- set base = host -%}
+        {%- set host_part = host.split('://', 1)[1] -%}
+      {%- else -%}
+        {%- set base = scheme ~ '://' ~ host -%}
+        {%- set host_part = host -%}
+      {%- endif -%}
+      {%- if host_part | regex_search(':[0-9]+$') or ('/' in host_part) -%}
+        {{ base }}
+      {%- else -%}
+        {{ base ~ ':' ~ port }}
+      {%- endif -%}
+      
+    console_url: >-
+      {%- set lb_enabled = rustfs_enable_lb | default(false) | bool -%}
+      {%- set console_candidate = (_lb_console_domain if (_lb_console_domain | length) > 0 else _lb_api_domain) -%}
+      {%- set lb_candidate = console_candidate if (console_candidate | length) > 0 else _lb_addr -%}
+      {%- set host = lb_candidate if (lb_enabled and (lb_candidate | length) > 0) else (_first_addr if not dns_zone else ansible_hostname + '.' + dns_zone) -%}
+      {%- set scheme = _scheme -%}
+      {%- set port = _console_port -%}
+      {%- if '://' in host -%}
+        {%- set base = host -%}
+        {%- set host_part = host.split('://', 1)[1] -%}
+      {%- else -%}
+        {%- set base = scheme ~ '://' ~ host -%}
+        {%- set host_part = host -%}
+      {%- endif -%}
+      {%- if host_part | regex_search(':[0-9]+$') or ('/' in host_part) -%}
+        {{ base }}
+      {%- else -%}
+        {{ base ~ ':' ~ port }}
+      {%- endif -%}
+
+- name: Опубликовать чистые данные для интерфейса платформы
+  run_once: true
+  delegate_to: localhost
+  ansible.builtin.set_stats:
+    data:
+      connection_url: "{{ connection_url | trim }}"
+      console_url: "{{ console_url | trim }}"
+      access_key: "{{ rustfs_root_user | default('rustfsadmin') }}"
+      cluster_mode: "{{ cluster_mode }}"
+      rustfs_node_count: "{{ rustfs_node_count }}"
+      inventory_first_host: "{{ inventory_first_host }}"
+      rustfs_drives_per_node: "{{ rustfs_drives_per_node }}"

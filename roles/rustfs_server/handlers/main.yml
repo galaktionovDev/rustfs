@@ -1,0 +1,12 @@
+---
+- name: Перечитать systemd и перезапустить RustFS
+  ansible.builtin.systemd:
+    daemon_reload: true
+    name: rustfs
+    state: restarted
+
+- name: Перезапустить службу RustFS
+  ansible.builtin.systemd:
+    name: rustfs
+    state: restarted
+  when: not (_rustfs_service_unit.changed | default(false))

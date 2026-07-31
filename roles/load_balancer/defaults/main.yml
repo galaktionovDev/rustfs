@@ -1,0 +1,20 @@
+---
+
+rustfs_server_port: 9000
+rustfs_console_port: 9001
+
+rustfs_lb_api_port: 9000
+rustfs_lb_console_port: 9001
+haproxy_port: 8404
+
+rustfs_cluster_nodes_group: "node"
+rustfs_lb_group: "lb"
+
+haproxy_admin_username: "admin"
+haproxy_admin_password: ""
+
+keepalived_vip: "{{ rustfs_entrypoint_address }}" 
+
+keepalived_root_password: ""
+
+keepalived_router_id: 55

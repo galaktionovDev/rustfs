@@ -1,0 +1,16 @@
+[Unit]
+Description=RustFS Object Storage
+After=network-online.target local-fs.target
+Wants=network-online.target local-fs.target
+
+[Service]
+Type=simple
+User={{ rustfs_user }}
+Group={{ rustfs_group }}
+EnvironmentFile={{ rustfs_etc_dir }}/rustfs.env
+ExecStart={{ rustfs_bin_dir }}/rustfs server
+Restart=always
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

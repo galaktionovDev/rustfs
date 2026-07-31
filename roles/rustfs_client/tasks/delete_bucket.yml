@@ -1,0 +1,55 @@
+---
+- name: Проверить параметры бакета
+  ansible.builtin.assert:
+    that:
+      - bucket_name is defined
+      - (bucket_name | string) | length > 0
+    fail_msg: "bucket_name is required"
+
+- name: Выбрать узел для работы с бакетами
+  run_once: true
+  ansible.builtin.set_fact:
+    _rustfs_host: "{{ groups['node'] | first }}"
+
+- name: Найти исполняемый файл rustfs-cli на целевом хосте
+  run_once: true
+  delegate_to: "{{ _rustfs_host }}"
+  ansible.builtin.shell: |
+    for b in /usr/local/bin/rustfs-cli /usr/bin/rustfs-cli /opt/rustfs/bin/rustfs-cli /usr/local/bin/rc; do
+      [ -x "$b" ] && { echo "$b"; exit 0; }
+    done
+    exit 1
+  register: _cli_bin_search
+  changed_when: false
+  failed_when: _cli_bin_search.rc != 0
+
+- name: Bucket | Зафиксировать путь к бинарнику rustfs-cli
+  run_once: true
+  ansible.builtin.set_fact:
+    _cli_bin: "{{ _cli_bin_search.stdout | trim }}"
+
+- name: Проверить, существует ли бакет
+  run_once: true
+  delegate_to: "{{ _rustfs_host }}"
+  ansible.builtin.shell: |
+    "{{ _cli_bin }}" bucket list "{{ rustfs_alias | default('rustfs-local') }}/{{ bucket_name }}" >/dev/null 2>&1
+  register: _bucket_stat
+  changed_when: false
+  failed_when: false
+
+- name: Удалить бакет при наличии
+  run_once: true
+  when: _bucket_stat.rc == 0
+  delegate_to: "{{ _rustfs_host }}"
+  ansible.builtin.shell: |
+    "{{ _cli_bin }}" bucket remove "{{ rustfs_alias | default('rustfs-local') }}/{{ bucket_name }}"
+  register: _bucket_remove
+  changed_when: _bucket_remove.rc == 0
+
+- name: Опубликовать результат удаления бакета для портала
+  run_once: true
+  become: false
+  delegate_to: localhost
+  ansible.builtin.set_stats:
+    data:
+      bucket_name: "{{ bucket_name }}"

@@ -1,0 +1,10 @@
+---
+- name: Удаление бакета RustFS
+  hosts: node
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Удаление целевого бакета
+      ansible.builtin.import_role:
+        name: rustfs_client
+        tasks_from: delete_bucket.yml

@@ -1,0 +1,37 @@
+global_defs {
+    router_id {{ ansible_hostname }}
+    script_user keepalived_script
+    enable_script_security
+}
+
+vrrp_script check_haproxy {
+    script "/etc/keepalived/check_haproxy.sh"
+    interval 2
+    weight 2
+}
+
+vrrp_instance VI_RUSTFS {
+    {% if (groups[rustfs_lb_group] | default([])) | length > 0 and inventory_hostname == (groups[rustfs_lb_group] | first) %}
+    state MASTER
+    priority 101
+    {% else %}
+    state BACKUP
+    priority 100
+    {% endif %}
+    interface {{ ansible_default_ipv4.interface }}
+    virtual_router_id {{ keepalived_router_id }}
+    advert_int 1
+
+    authentication {
+        auth_type PASS
+        auth_pass {{ keepalived_root_password }}
+    }
+
+    virtual_ipaddress {
+        {{ rustfs_entrypoint_address }}
+    }
+
+    track_script {
+        check_haproxy
+    }
+}

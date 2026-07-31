@@ -1,0 +1,67 @@
+---
+- name: Собрать текущее состояние диска
+  ansible.builtin.set_fact:
+    _psd_mounts_by_dev: "{{ ansible_mounts | selectattr('device', 'equalto', item.key) | list }}"
+    _psd_mounts_by_path: "{{ ansible_mounts | selectattr('mount', 'equalto', item.value) | list }}"
+    _psd_already_ok: >-
+      {{
+        (ansible_mounts | selectattr('device', 'equalto', item.key) | list | length > 0)
+        and
+        (ansible_mounts | selectattr('mount', 'equalto', item.value) | list | length > 0)
+      }}
+  changed_when: false
+
+- name: Создать каталог монтирования при необходимости
+  ansible.builtin.file:
+    path: "{{ item.value }}"
+    state: directory
+    owner: "{{ rustfs_user | default('rustfs') }}"
+    group: "{{ rustfs_group | default('rustfs') }}"
+    mode: "0750"
+  when: not _psd_already_ok
+
+- name: Размонтировать устройство при несоответствии точки монтирования
+  ansible.posix.mount:
+    path: "{{ (_psd_mounts_by_dev[0].mount | default('')) }}"
+    state: unmounted
+  when:
+    - not _psd_already_ok
+    - _psd_mounts_by_dev | length > 0
+    - (_psd_mounts_by_dev[0].mount | default('')) != item.value
+
+- name: Очистить файловую систему при необходимости
+  ansible.builtin.command: "wipefs -af {{ item.key }}"
+  register: _psd_wipe
+  when:
+    - not _psd_already_ok
+    - rustfs_preconf_wipe_disks | default(false)
+  changed_when: _psd_wipe.rc == 0
+
+- name: Создать файловую систему XFS на устройстве
+  community.general.filesystem:
+    fstype: xfs
+    dev: "{{ item.key }}"
+    force: "{{ (rustfs_preconf_wipe_disks | default(false)) | bool }}"
+    opts: "{{ omit if (ansible_distribution.split(' ') | first | lower == 'red') else '-m reflink=0' }}"
+  when: not _psd_already_ok
+
+- name: Получить UUID устройства
+  ansible.builtin.command: "blkid -o value -s UUID {{ item.key }}"
+  register: _psd_blk
+  changed_when: false
+
+- name: Прописать устройство в fstab и смонтировать
+  ansible.posix.mount:
+    path: "{{ item.value }}"
+    src: "UUID={{ _psd_blk.stdout | trim }}"
+    fstype: xfs
+    opts: "defaults,noatime,nodiratime"
+    state: mounted
+
+- name: Проверить наличие каталога с нужными правами
+  ansible.builtin.file:
+    path: "{{ item.value }}"
+    state: directory
+    owner: "{{ rustfs_user | default('rustfs') }}"
+    group: "{{ rustfs_group | default('rustfs') }}"
+    mode: "0750"

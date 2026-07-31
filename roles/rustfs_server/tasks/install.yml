@@ -1,0 +1,28 @@
+---
+- name: Создать каталог для установочных файлов
+  ansible.builtin.file:
+    path: "{{ rustfs_installer_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Скачать архив RustFS Server
+  ansible.builtin.get_url:
+    url: "{{ rustfs_archive_url }}"
+    dest: "{{ rustfs_installer_dir }}/rustfs-{{ rustfs_version }}.tar.gz"
+    mode: "0644"
+  register: _rustfs_download
+  retries: 3
+  delay: 3
+  until: _rustfs_download is succeeded
+
+- name: Распаковать RustFS в системный каталог бинарников
+  ansible.builtin.unarchive:
+    src: "{{ rustfs_installer_dir }}/rustfs-{{ rustfs_version }}.tar.gz"
+    dest: "{{ rustfs_bin_dir }}"
+    remote_src: true
+    extra_opts: [--strip-components=1]
+    owner: root
+    group: root
+    mode: "0755"

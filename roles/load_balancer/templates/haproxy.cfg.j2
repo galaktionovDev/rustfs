@@ -1,0 +1,78 @@
+global
+    log         /dev/log local0
+    chroot      /var/lib/haproxy
+    pidfile     /var/run/haproxy.pid
+    maxconn     4000
+    user        haproxy
+    group       haproxy
+    daemon
+    stats socket /var/lib/haproxy/stats
+
+defaults
+    mode                    http
+    log                     global
+    option                  dontlognull
+    option http-server-close
+    option                  redispatch
+    retries                 3
+    timeout http-request    10s
+    timeout queue           1m
+    timeout connect         10s
+    timeout client          1m
+    timeout server          1m
+    timeout http-keep-alive 10s
+    timeout check           10s
+    maxconn                 3000
+
+# ------------------------------------------------------------------------------
+# Frontend & Backend для S3 API (RustFS Server Data Port)
+# ------------------------------------------------------------------------------
+
+frontend rustfs_api_frontend
+    bind *:{{ rustfs_lb_api_port }}
+    mode tcp
+    option tcplog
+    default_backend rustfs_api_backend
+
+backend rustfs_api_backend
+    mode tcp
+    balance roundrobin
+    option httpchk GET /
+    http-check expect status 200,403
+    timeout connect 5s
+    timeout server 30s
+    {% for host in groups[rustfs_cluster_nodes_group | default('node')] %}
+    server rustfs-node-api-{{ host | replace('-', '_') }} {{ hostvars[host].ansible_host | default(hostvars[host].ansible_default_ipv4.address) }}:9000 check inter 5s fall 3 rise 2
+    {% endfor %}
+
+# ------------------------------------------------------------------------------
+# Frontend & Backend для Web Console Management
+# ------------------------------------------------------------------------------
+
+frontend rustfs_console_frontend
+    bind *:{{ rustfs_lb_console_port }}
+    mode http
+    option httplog
+    default_backend rustfs_console_backend
+
+backend rustfs_console_backend
+    mode http
+    balance roundrobin
+    option httpchk GET /
+    http-check expect status 200,301,302,401,403
+    {% for host in groups[rustfs_cluster_nodes_group | default('node')] %}
+    server rustfs-node-console-{{ host | replace('-', '_') }} {{ hostvars[host].ansible_host | default(hostvars[host].ansible_default_ipv4.address) }}:9001 check inter 5s fall 3 rise 2
+    {% endfor %}
+
+# ------------------------------------------------------------------------------
+# Панель статистики балансировщика
+# ------------------------------------------------------------------------------
+
+listen stats
+    bind *:{{ haproxy_port }}
+    mode http
+    stats enable
+    stats uri /haproxy_stats
+    stats refresh 5s
+    stats admin if TRUE
+    stats auth {{ haproxy_admin_username }}:{{ haproxy_admin_password }}

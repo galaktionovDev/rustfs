@@ -1,0 +1,113 @@
+- name: Создать каталог для установочных файлов
+  ansible.builtin.file:
+    path: "{{ rustfs_installer_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Распаковать архив rustfs-cli
+  ansible.builtin.unarchive:
+    src: "{{ rustfs_cli_archive_path }}"
+    dest: "{{ rustfs_installer_dir }}"
+    remote_src: true
+    mode: "0755"
+  register: _rustfs_download
+  until: _rustfs_download is succeeded
+  retries: 3
+  delay: 3
+  become: true
+
+- name: Переместить бинарник в системный путь под уникальным именем
+  ansible.builtin.copy:
+    src: "{{ rustfs_installer_dir }}/rc"
+    dest: "/usr/local/bin/rustfs-cli"
+    owner: root
+    group: root
+    mode: "0755"
+    remote_src: true
+  become: true
+
+- name: Проверить расположение бинарника rustfs-cli
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /usr/local/bin/rustfs-cli
+    - /usr/bin/rustfs-cli
+  register: _rc_stats
+
+- name: Определить установленный путь rustfs-cli
+  ansible.builtin.set_fact:
+    _rc_path: >-
+      {{
+        (
+          _rc_stats.results
+          | selectattr('stat.exists', 'defined')
+          | selectattr('stat.exists')
+          | map(attribute='stat.path')
+          | list
+          | first
+        ) | default('')
+      }}
+
+- name: Прервать выполнение при отсутствии rustfs-cli
+  ansible.builtin.fail:
+    msg: "rustfs-cli binary not found after unpacking"
+  when: _rc_path == ''
+
+- name: Создать симлинк совместимости для rc
+  ansible.builtin.file:
+    src: "{{ _rc_path }}"
+    dest: /usr/local/bin/rc
+    state: link
+    mode: "0755"
+  become: true
+
+- name: Создать каталог конфигурации rc для root
+  ansible.builtin.file:
+    path: /root/.rc
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  become: true
+
+- name: Сформировать шаблон команды rc
+  ansible.builtin.set_fact:
+    rc_command: "/usr/local/bin/rc"
+
+- name: Установить значение URL RustFS по умолчанию
+  ansible.builtin.set_fact:
+    rustfs_url: "http://{{ ansible_default_ipv4.address | default(ansible_host) }}:{{ rustfs_server_port }}"
+  when: (rustfs_url | default('')) == ''
+
+- name: Дождаться доступности службы RustFS
+  ansible.builtin.wait_for:
+    host: "{{ ansible_default_ipv4.address | default(ansible_host) }}"
+    port: "{{ rustfs_server_port | int }}"
+    connect_timeout: 2
+    timeout: 15
+  register: _rc_wait
+  failed_when: false
+  become: true
+  when: rustfs_autostart | default(true)
+
+- name: Проверить существующий алиас RustFS
+  ansible.builtin.command: >-
+    {{ rc_command }} alias ls {{ rustfs_alias }}
+  register: _rc_alias_check
+  failed_when: false
+  changed_when: false
+  become: true
+  when: rustfs_autostart | default(true)
+
+- name: Настроить алиас RustFS
+  ansible.builtin.command: >-
+    {{ rc_command }} alias set {{ rustfs_alias }} {{ rustfs_url }}
+    {{ rustfs_root_user }} {{ rustfs_root_password }}
+  register: _rc_alias_set
+  changed_when: "'Added' in _rc_alias_set.stdout or 'Updated' in _rc_alias_set.stdout"
+  ignore_errors: true
+  become: true
+  when: rustfs_autostart | default(true)

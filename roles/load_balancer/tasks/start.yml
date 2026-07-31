@@ -1,0 +1,51 @@
+---
+- name: Запустить и включить автозапуск службы HAProxy
+  become: true
+  ansible.builtin.systemd:
+    name: haproxy
+    state: "{{ 'restarted' if _haproxy_config.changed else 'started' }}"
+    enabled: true
+    daemon_reload: true
+
+- name: Запустить и включить автозапуск службы Keepalived
+  become: true
+  ansible.builtin.systemd:
+    name: keepalived
+    state: "{{ 'restarted' if _keepalived_config.changed else 'started' }}"
+    enabled: true
+    daemon_reload: true
+
+- name: Верифицировать текущее распределение IP-адресов на сетевом интерфейсе
+  ansible.builtin.shell: "ip addr show {{ ansible_default_ipv4.interface }}"
+  register: _vip_check
+  changed_when: false
+
+- name: Отобразить статус назначения VIP адреса в логе AWX
+  ansible.builtin.debug:
+    var: _vip_check.stdout_lines
+
+- name: (Инфо) Собрать статистику бэкендов HAProxy
+  ansible.builtin.uri:
+    url: "http://localhost:{{ haproxy_port | default(8404) }}/haproxy_stats;csv"
+    url_username: "{{ haproxy_admin_username }}"
+    url_password: "{{ haproxy_admin_password }}"
+    force_basic_auth: true
+    return_content: true
+    status_code: 200
+  register: _lb_backend_status
+  failed_when: false
+  changed_when: false
+
+- name: Отобразить состояние бэкендов в логе
+  ansible.builtin.debug:
+    msg: "{{ _lb_backend_status.content | default('') | split('\n') | select('search', 'rustfs') | list }}"
+  when: _lb_backend_status.content is defined
+
+- name: Ожидать сетевой доступности плавающего адреса (VIP) на портах API
+  ansible.builtin.wait_for:
+    host: "{{ keepalived_vip }}"
+    port: "{{ rustfs_lb_api_port }}"
+    state: started
+    timeout: 20
+  delegate_to: "{{ ansible_play_hosts[0] }}"
+  run_once: true

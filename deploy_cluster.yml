@@ -1,0 +1,32 @@
+---
+- name: Развернуть узлы хранилища RustFS Server
+  hosts: "{{ rustfs_cluster_nodes_group | default('node') }}"
+  become: true
+  any_errors_fatal: true
+
+  roles:
+    - role: rustfs_server
+
+- name: Развернуть балансировщики нагрузки (HAProxy + Keepalived)
+  hosts: "{{ rustfs_lb_group | default('lb') }}"
+  become: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: Выполнить роль балансировщика при включенном флаге LB
+      ansible.builtin.include_role:
+        name: load_balancer
+      when:
+        - rustfs_enable_lb | default(false) | bool
+        - (groups[rustfs_lb_group | default('lb')] | default([])) | length > 0
+
+- name: Установить инструменты управления бакетами (RustFS CLI)
+  hosts: "{{ rustfs_cluster_nodes_group | default('node') }}"
+  become: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: Установка RustFS CLI
+      ansible.builtin.include_role:
+        name: rustfs_client
+        tasks_from: install.yml
