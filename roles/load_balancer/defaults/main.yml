@@ -13,7 +13,8 @@ rustfs_lb_group: "lb"
 haproxy_admin_username: "admin"
 haproxy_admin_password: ""
 
-keepalived_vip: "{{ rustfs_entrypoint_address }}" 
+rustfs_entrypoint_address: ""
+keepalived_vip: "{{ rustfs_entrypoint_address | default('') }}" 
 
 keepalived_root_password: ""
 

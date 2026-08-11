@@ -1,4 +1,18 @@
 ---
+- name: Создать системную группу rustfs
+  ansible.builtin.group:
+    name: rustfs
+    state: present
+    system: true
+
+- name: Создать системного пользователя rustfs
+  ansible.builtin.user:
+    name: rustfs
+    group: rustfs
+    system: true
+    shell: /sbin/nologin
+    create_home: false
+    
 - name: Создать каталог для установочных файлов
   ansible.builtin.file:
     path: "{{ rustfs_installer_dir }}"

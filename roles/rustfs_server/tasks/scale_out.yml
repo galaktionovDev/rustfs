@@ -62,15 +62,11 @@
 # --- ШАГ 2: РАБОТА С НОВЫМИ УЗЛАМИ ---
 
 - name: Установить серверную часть RustFS на новые узлы
-  ansible.builtin.include_tasks: install_server.yml
+  ansible.builtin.include_tasks: install.yml
   when: inventory_hostname in (rustfs_new_hosts | default([]))
 
 - name: Подготовить локальные диски на новых узлах
   ansible.builtin.include_tasks: prepare_disks.yml
-  when: inventory_hostname in (rustfs_new_hosts | default([]))
-
-- name: Установить клиент утилиты rc на новые узлы
-  ansible.builtin.include_tasks: install_client.yml
   when: inventory_hostname in (rustfs_new_hosts | default([]))
 
 - name: Обновить локальный /etc/hosts на всех узлах кластера
@@ -84,9 +80,10 @@
     name: rustfs
     state: stopped
   when: inventory_hostname in (rustfs_all_hosts | default(ansible_play_hosts_all))
+  ignore_errors: true
 
 - name: Применить обновлённую конфигурацию топологии на всех узлах
-  ansible.builtin.include_tasks: configure_server.yml
+  ansible.builtin.include_tasks: configure.yml
   when: inventory_hostname in (rustfs_all_hosts | default(ansible_play_hosts_all))
 
 - name: Запустить службу RustFS с новыми узлами
@@ -94,3 +91,10 @@
     name: rustfs
     state: started
   when: inventory_hostname in (rustfs_all_hosts | default(ansible_play_hosts_all))
+
+- name: Установить клиент утилиты rc на новые узлы
+  ansible.builtin.include_role:
+    name: rustfs_client
+    tasks_from: install.yml
+  when: inventory_hostname in (rustfs_new_hosts | default([]))
+  
