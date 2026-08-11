@@ -1,6 +1,6 @@
 ---
 - name: Создание бакета RustFS
-  hosts: node
+  hosts: nodes
   gather_facts: false
   become: true
   tasks:

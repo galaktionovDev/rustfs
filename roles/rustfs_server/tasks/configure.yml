@@ -1,4 +1,7 @@
 ---
+- name: Подготовить переменные пулов и вычитать старый конфиг
+  ansible.builtin.include_tasks: prepare_volumes.yml
+
 - name: Создать каталоги конфигурации и логов RustFS
   ansible.builtin.file:
     path: "{{ item }}"

@@ -40,6 +40,7 @@
     src: keepalived.conf.j2
     dest: /etc/keepalived/keepalived.conf
   register: _keepalived_config
+  when: not (lb_enable | default(false) | bool)
 
 - name: Собрать информацию об установленных менеджерах пакетов
   ansible.builtin.package_facts:
@@ -119,3 +120,21 @@
         name: haproxy_connect_any
         state: true
         persistent: true
+
+- name: Перезагрузить HAProxy при изменении конфигурации
+  become: true
+  ansible.builtin.systemd:
+    name: haproxy
+    state: reloaded
+  when:
+    - _haproxy_config is defined
+    - _haproxy_config.changed | default(false)
+
+- name: Перезагрузить Keepalived при изменении конфигурации
+  become: true
+  ansible.builtin.systemd:
+    name: keepalived
+    state: reloaded
+  when:
+    - lb_enable | default(false) | bool
+    - _keepalived_config.changed | default(false)

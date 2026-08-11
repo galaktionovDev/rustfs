@@ -9,47 +9,70 @@
 - name: Выбрать узел для работы с бакетами
   run_once: true
   ansible.builtin.set_fact:
-    _rustfs_host: "{{ groups['node'] | first }}"
+    _rc_host: "{{ groups['nodes'] | first }}"
+    _rc_alias: "{{ rustfs_alias | default('myrustfs') }}"
 
-- name: Найти исполняемый файл rustfs-cli на целевом хосте
+- name: Найти исполняемый файл rc / rustfs-cli на целевом хосте
   run_once: true
-  delegate_to: "{{ _rustfs_host }}"
+  delegate_to: "{{ _rc_host }}"
   ansible.builtin.shell: |
-    for b in /usr/local/bin/rustfs-cli /usr/bin/rustfs-cli /opt/rustfs/bin/rustfs-cli /usr/local/bin/rc; do
+    for b in /usr/local/bin/rustfs-cli /usr/bin/rustfs-cli /usr/local/bin/rc /usr/bin/rc; do
       [ -x "$b" ] && { echo "$b"; exit 0; }
     done
     exit 1
-  register: _cli_bin_search
+  register: _rc_bin_search
   changed_when: false
-  failed_when: _cli_bin_search.rc != 0
+  failed_when: _rc_bin_search.rc != 0
 
-- name: Bucket | Зафиксировать путь к бинарнику rustfs-cli
+- name: Bucket | Зафиксировать путь к бинарнику rc
   run_once: true
   ansible.builtin.set_fact:
-    _cli_bin: "{{ _cli_bin_search.stdout | trim }}"
+    _rc_bin: "{{ _rc_bin_search.stdout | trim }}"
+
+- name: Проверить, существует ли алиас rc
+  run_once: true
+  delegate_to: "{{ _rc_host }}"
+  ansible.builtin.command: >-
+    env RC_CONFIG_DIR=/root/.rc {{ _rc_bin }} alias list
+  register: _alias_list
+  changed_when: false
+  failed_when: false
+
+- name: Создать алиас rc при отсутствии
+  run_once: true
+  when: _rc_alias not in (_alias_list.stdout | default(''))
+  delegate_to: "{{ _rc_host }}"
+  ansible.builtin.shell: |
+    RC_CONFIG_DIR=/root/.rc "{{ _rc_bin }}" alias set "{{ _rc_alias }}" \
+      "{{ connection_url | regex_replace('/+$','') }}" \
+      "{{ rustfs_root_user }}" "{{ rustfs_root_password }}"
+  register: _alias_set
+  changed_when: true
 
 - name: Проверить, существует ли бакет
   run_once: true
-  delegate_to: "{{ _rustfs_host }}"
-  ansible.builtin.shell: |
-    "{{ _cli_bin }}" bucket list "{{ rustfs_alias | default('rustfs-local') }}/{{ bucket_name }}" >/dev/null 2>&1
-  register: _bucket_stat
+  delegate_to: "{{ _rc_host }}"
+  ansible.builtin.command: >-
+    env RC_CONFIG_DIR=/root/.rc {{ _rc_bin }} ls {{ _rc_alias }}/{{ bucket_name }}
+  register: _bucket_check
   changed_when: false
   failed_when: false
 
 - name: Удалить бакет при наличии
   run_once: true
-  when: _bucket_stat.rc == 0
-  delegate_to: "{{ _rustfs_host }}"
+  when: _bucket_check.rc == 0
+  delegate_to: "{{ _rc_host }}"
   ansible.builtin.shell: |
-    "{{ _cli_bin }}" bucket remove "{{ rustfs_alias | default('rustfs-local') }}/{{ bucket_name }}"
-  register: _bucket_remove
-  changed_when: _bucket_remove.rc == 0
+    RC_CONFIG_DIR=/root/.rc "{{ _rc_bin }}" rb "{{ _rc_alias }}/{{ bucket_name }}"
+  register: _rb
+  changed_when: true
 
-- name: Опубликовать результат удаления бакета для портала
+- name: Опубликовать результат удаления бакета
   run_once: true
   become: false
   delegate_to: localhost
   ansible.builtin.set_stats:
     data:
       bucket_name: "{{ bucket_name }}"
+      bucket_alias: "{{ _rc_alias }}"
+      bucket_deleted: "{{ _bucket_check.rc == 0 }}"

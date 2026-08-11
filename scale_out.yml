@@ -44,9 +44,10 @@
   
   tasks:
     - name: Rebuild HAProxy backends after scale-out
+      ansible.builtin.include_role:
+        name: load_balancer
+        tasks_from: configure.yml
       when:
-        - rustfs_enable_lb | default(false) | bool
+        - (lb_enabled | default(rustfs_enable_lb | default(false))) | bool
         - (groups[rustfs_lb_group | default('lb')] | default([])) | length > 0
-      ansible.builtin.import_role:
-        name: rustfs_server
-        tasks_from: rustfs_lb.yml
+        

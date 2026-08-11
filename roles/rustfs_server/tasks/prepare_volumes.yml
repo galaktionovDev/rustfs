@@ -1,0 +1,27 @@
+---
+- name: Сформировать список каталогов данных
+  ansible.builtin.set_fact:
+    rustfs_server_datadirs: "{{ rustfs_extra_disks | map(attribute='mount') | list }}"
+  when: rustfs_server_datadirs is not defined or (rustfs_server_datadirs | length == 0)
+
+- name: Определить старую ноду для считывания существующего конфига
+  ansible.builtin.set_fact:
+    target_old_node: "{{ (existing_nodes | default([]) | map(attribute='hostname') | list | first) | default('') }}"
+  run_once: true
+
+- name: Вычитать текущий rustfs.env со старой ноды
+  ansible.builtin.slurp:
+    src: "{{ rustfs_etc_dir }}/rustfs.env"
+  register: _existing_rustfs_env
+  delegate_to: "{{ target_old_node if (target_old_node | length > 0) else inventory_hostname }}"
+  when: target_old_node | length > 0
+  ignore_errors: true
+  run_once: true
+
+- name: Сохранить существующую строку RUSTFS_VOLUMES
+  ansible.builtin.set_fact:
+    existing_volumes_string: "{{ (_existing_rustfs_env.content | b64decode | regex_search('RUSTFS_VOLUMES=\"([^\"]+)\"', '\\1')) | first | default('') }}"
+  when:
+    - _existing_rustfs_env is defined
+    - _existing_rustfs_env.content is defined
+  run_once: true

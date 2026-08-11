@@ -42,7 +42,8 @@ backend rustfs_api_backend
     timeout connect 5s
     timeout server 30s
     {% for host in groups[rustfs_cluster_nodes_group | default('node')] %}
-    server rustfs-node-api-{{ host | replace('-', '_') }} {{ hostvars[host].ansible_host | default(hostvars[host].ansible_default_ipv4.address) }}:9000 check inter 5s fall 3 rise 2
+    {% set ip = hostvars[host].ansible_host | default(hostvars[host].default_v4_address | default(hostvars[host].ansible_default_ipv4.address | default(host))) %}
+    server rustfs-node-api-{{ host | replace('-', '_') }} {{ ip }}:9000 check inter 5s fall 3 rise 2
     {% endfor %}
 
 # ------------------------------------------------------------------------------
@@ -61,7 +62,8 @@ backend rustfs_console_backend
     option httpchk GET /
     http-check expect status 200,301,302,401,403
     {% for host in groups[rustfs_cluster_nodes_group | default('node')] %}
-    server rustfs-node-console-{{ host | replace('-', '_') }} {{ hostvars[host].ansible_host | default(hostvars[host].ansible_default_ipv4.address) }}:9001 check inter 5s fall 3 rise 2
+    {% set ip = hostvars[host].ansible_host | default(hostvars[host].default_v4_address | default(hostvars[host].ansible_default_ipv4.address | default(host))) %}
+    server rustfs-node-api-{{ host | replace('-', '_') }} {{ ip }}:9001 check inter 5s fall 3 rise 2
     {% endfor %}
 
 # ------------------------------------------------------------------------------

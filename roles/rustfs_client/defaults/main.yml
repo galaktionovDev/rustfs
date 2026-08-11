@@ -2,9 +2,9 @@
 rustfs_cli_version: "v0.1.25"
 rustfs_installer_dir: "/tmp/rustfs_installer"
 rustfs_cli_archive_path: "{{ nexus_url }}/repository/products-raw/rustfs/rustfs-cli-linux-amd64-{{ rustfs_cli_version }}.tar.gz"
-rustfs_cli_endpoint: "http://127.0.0.1:8080"
+rustfs_cli_endpoint: "http://127.0.0.1:9000"
 
-rustfs_server_port: 8080
+rustfs_server_port: 9000
 rustfs_autostart: true
 rustfs_alias: "rustfs-local"
 
