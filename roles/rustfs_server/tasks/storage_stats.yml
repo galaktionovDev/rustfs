@@ -1,0 +1,45 @@
+---
+- name: Прочитать применённый файл окружения
+  ansible.builtin.slurp:
+    src: "{{ rustfs_etc_dir }}/rustfs.env"
+  register: _storage_env
+  run_once: true
+  no_log: true
+
+- name: Получить фактическую строку endpoints
+  ansible.builtin.set_fact:
+    _storage_volumes: "{{ ((_storage_env.content | b64decode) | regex_search('(?m)^RUSTFS_VOLUMES=\"([^\"]+)\"$', '\\1') | default([], true) | first) | default('') }}"
+  run_once: true
+
+- name: Проверить наличие применённой топологии
+  ansible.builtin.assert:
+    that:
+      - _storage_volumes | length > 0
+      - hostvars[item].rustfs_storage_disk_report is defined
+      - hostvars[item].storage_item_id is defined
+  loop: "{{ _hosts }}"
+  run_once: true
+
+- name: Опубликовать сведения о дисках и начальном пуле
+  ansible.builtin.set_stats:
+    data:
+      storage_disk_report: >-
+        {%- set reports = {} -%}
+        {%- for host in _hosts -%}
+        {%- set _ = reports.update({host: hostvars[host].rustfs_storage_disk_report}) -%}
+        {%- endfor -%}
+        {{ reports }}
+      storage_nodes: >-
+        {%- set nodes = [] -%}
+        {%- for host in _hosts | sort -%}
+        {%- set _ = nodes.append({'item_id': hostvars[host].storage_item_id,
+          'hostname': host, 'alias': hostvars[host].storage_alias | default('node-' ~ loop.index),
+          'pool_id': 'pool-1'}) -%}
+        {%- endfor -%}
+        {{ nodes }}
+      storage_pools: >-
+        {{ [{'id': 'pool-1', 'mode': rustfs_cluster_mode,
+          'volumes': _storage_volumes, 'hosts': (_hosts | sort),
+          'drives_per_node': (rustfs_storage_disk_report | length)}] }}
+    aggregate: false
+  run_once: true

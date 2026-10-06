@@ -1,0 +1,46 @@
+---
+- name: Прочитать фактические монтирования существующего узла
+  ansible.builtin.command:
+    argv: [findmnt, -rn, -M, "{{ item }}", -o, 'TARGET,FSTYPE,OPTIONS,UUID']
+  loop: "{{ rustfs_server_datadirs | default([]) }}"
+  register: _rustfs_existing_mount_info
+  changed_when: false
+  when: inventory_hostname in rustfs_existing_hosts
+
+- name: Проверить XFS и доступность существующих дисков для записи
+  ansible.builtin.assert:
+    that:
+      - item.stdout.split() | length == 4
+      - item.stdout.split()[0] == item.item
+      - item.stdout.split()[1] == 'xfs'
+      - "'rw' in item.stdout.split()[2].split(',')"
+    fail_msg: "Существующий каталог {{ item.item }} не является смонтированной XFS с доступом для записи"
+  loop: "{{ _rustfs_existing_mount_info.results | default([]) }}"
+  when: inventory_hostname in rustfs_existing_hosts
+
+- name: Проверить сохранённые UUID XFS существующих дисков
+  ansible.builtin.assert:
+    that:
+      - _matching_mounts | length == 1
+      - _matching_mounts[0].stdout.split()[3] == item.fs_uuid
+    fail_msg: "UUID XFS {{ item.mount }} отличается от сохранённого"
+  vars:
+    _matching_mounts: "{{ _rustfs_existing_mount_info.results | selectattr('item', 'equalto', item.mount) | list }}"
+  loop: "{{ rustfs_existing_storage_disks | default([]) }}"
+  when:
+    - inventory_hostname in rustfs_existing_hosts
+    - item.fs_uuid is defined
+
+- name: Прочитать версию нового сервера
+  ansible.builtin.command:
+    cmd: "{{ rustfs_bin_dir }}/rustfs --version"
+  register: _rustfs_new_version
+  changed_when: false
+  when: inventory_hostname in rustfs_new_hosts
+
+- name: Проверить совпадение версии нового и существующего сервера
+  ansible.builtin.assert:
+    that:
+      - _rustfs_new_version.stdout_lines[0] == hostvars[rustfs_primary_host]._rustfs_existing_version.stdout_lines[0]
+    fail_msg: "Версия нового сервера отличается от существующего кластера"
+  when: inventory_hostname in rustfs_new_hosts

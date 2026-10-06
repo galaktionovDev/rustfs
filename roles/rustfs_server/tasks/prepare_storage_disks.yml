@@ -1,0 +1,23 @@
+---
+- name: Проверить все назначенные устройства до изменения дисков
+  storage_disk_info:
+    disks: "{{ storage_disks }}"
+  register: _storage_plan
+
+- name: Подготовить назначенные диски по одному
+  ansible.builtin.include_tasks: prepare_storage_disk.yml
+  loop: "{{ _storage_plan.disks }}"
+  loop_control:
+    loop_var: storage_disk
+    label: "{{ storage_disk.name }}"
+
+- name: Проверить итоговые файловые системы и монтирования
+  storage_disk_info:
+    disks: "{{ storage_disks }}"
+    require_mounted: true
+  register: _storage_result
+
+- name: Сохранить фактический отчёт для текущего узла
+  ansible.builtin.set_fact:
+    rustfs_storage_disk_report: "{{ _storage_result.disks }}"
+    rustfs_server_datadirs: "{{ _storage_result.disks | map(attribute='mount') | list }}"

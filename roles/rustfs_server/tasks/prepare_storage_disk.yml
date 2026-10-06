@@ -1,0 +1,54 @@
+---
+- name: Повторно проверить устройство перед подготовкой
+  storage_disk_info:
+    disks: "{{ [storage_disk] }}"
+  register: _storage_current
+
+- name: Создать пустой каталог монтирования
+  ansible.builtin.file:
+    path: "{{ storage_disk.mount }}"
+    state: directory
+    owner: "{{ rustfs_user }}"
+    group: "{{ rustfs_group }}"
+    mode: "0750"
+
+- name: Создать XFS только на устройстве без сигнатур
+  community.general.filesystem:
+    fstype: xfs
+    dev: "{{ _storage_current.disks[0].path }}"
+    force: false
+    opts: "{{ omit if (ansible_distribution.split(' ') | first | lower == 'red') else '-m reflink=0' }}"
+  when: _storage_current.disks[0].fs_type == ''
+
+- name: Прочитать UUID файловой системы
+  ansible.builtin.command:
+    argv:
+      - blkid
+      - -o
+      - value
+      - -s
+      - UUID
+      - "{{ _storage_current.disks[0].path }}"
+  register: _storage_fs_uuid
+  changed_when: false
+
+- name: Проверить наличие UUID XFS
+  ansible.builtin.assert:
+    that:
+      - (_storage_fs_uuid.stdout | trim | length) > 0
+
+- name: Сохранить монтирование по UUID и смонтировать XFS
+  ansible.posix.mount:
+    path: "{{ storage_disk.mount }}"
+    src: "UUID={{ _storage_fs_uuid.stdout | trim }}"
+    fstype: xfs
+    opts: defaults,noatime,nodiratime
+    state: mounted
+
+- name: Установить права на корневой каталог файловой системы
+  ansible.builtin.file:
+    path: "{{ storage_disk.mount }}"
+    state: directory
+    owner: "{{ rustfs_user }}"
+    group: "{{ rustfs_group }}"
+    mode: "0750"

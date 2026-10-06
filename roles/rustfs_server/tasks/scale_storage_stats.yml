@@ -1,0 +1,40 @@
+---
+- name: Прочитать применённую конфигурацию после масштабирования
+  ansible.builtin.slurp:
+    src: "{{ rustfs_etc_dir }}/rustfs.env"
+  register: _scale_storage_env
+  when: inventory_hostname == rustfs_primary_host
+  no_log: true
+
+- name: Получить применённую строку endpoints
+  ansible.builtin.set_fact:
+    _scale_storage_volumes: >-
+      {{ ((_scale_storage_env.content | b64decode)
+          | regex_search('(?m)^RUSTFS_VOLUMES="([^"]+)"$', '\1')
+          | default([], true) | first) | default('') }}
+    _scale_expected_volumes: "{{ rustfs_runtime_pools | map(attribute='volumes') | join(' ') }}"
+  when: inventory_hostname == rustfs_primary_host
+
+- name: Проверить итоговое состояние новых дисков и топологии
+  ansible.builtin.assert:
+    that:
+      - hostvars[rustfs_primary_host]._scale_storage_volumes == hostvars[rustfs_primary_host]._scale_expected_volumes
+      - hostvars[item].rustfs_storage_disk_report is defined
+      - hostvars[item].storage_item_id is defined
+    fail_msg: "Итоговое состояние хранения после масштабирования не подтверждено"
+  loop: "{{ rustfs_new_hosts }}"
+  run_once: true
+
+- name: Опубликовать состояние хранения после масштабирования
+  ansible.builtin.set_stats:
+    data:
+      storage_disk_report: >-
+        {%- set reports = {} -%}
+        {%- for host in rustfs_new_hosts -%}
+        {%- set _ = reports.update({host: hostvars[host].rustfs_storage_disk_report}) -%}
+        {%- endfor -%}
+        {{ reports }}
+      storage_nodes: "{{ rustfs_storage_nodes }}"
+      storage_pools: "{{ rustfs_runtime_pools }}"
+    aggregate: false
+  run_once: true

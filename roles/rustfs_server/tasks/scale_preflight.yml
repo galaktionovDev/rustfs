@@ -1,0 +1,80 @@
+---
+- name: Прочитать действующую конфигурацию каждого существующего узла
+  ansible.builtin.slurp:
+    path: "{{ rustfs_etc_dir }}/rustfs.env"
+  register: _rustfs_existing_env
+  when: inventory_hostname in hostvars[rustfs_primary_host].rustfs_existing_hosts
+  no_log: true
+
+- name: Получить endpoints существующего узла
+  ansible.builtin.set_fact:
+    rustfs_observed_volumes: >-
+      {%- set lines = (_rustfs_existing_env.content | b64decode).splitlines() -%}
+      {%- set line = lines | select('match', '^RUSTFS_VOLUMES=') | list | first | default('') -%}
+      {{ line | regex_replace('^RUSTFS_VOLUMES="(.*)"$', '\1') | regex_replace('^RUSTFS_VOLUMES=(.*)$', '\1') }}
+  when: inventory_hostname in hostvars[rustfs_primary_host].rustfs_existing_hosts
+
+- name: Проверить одинаковые endpoints существующих узлов
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].rustfs_observed_volumes | length > 0
+      - hostvars[item].rustfs_observed_volumes == hostvars[rustfs_primary_host].rustfs_observed_volumes
+    fail_msg: "Конфигурации существующих узлов различаются; изменение кластера остановлено"
+  loop: "{{ hostvars[rustfs_primary_host].rustfs_existing_hosts }}"
+  run_once: true
+
+- name: Прочитать действующие соответствия псевдонимов
+  ansible.builtin.command:
+    argv: [getent, hosts, "node-{{ item }}"]
+  loop: "{{ range(1, (hostvars[rustfs_primary_host].rustfs_existing_hosts | length) + 1) | list }}"
+  register: _rustfs_alias_lookup
+  changed_when: false
+  when: inventory_hostname == rustfs_primary_host
+
+- name: Восстановить существующую топологию по фактическим адресам
+  ansible.builtin.set_fact:
+    rustfs_observed_nodes: >-
+      {%- set nodes = [] -%}
+      {%- for host in rustfs_existing_hosts -%}
+      {%- set matches = [] -%}
+      {%- for lookup in _rustfs_alias_lookup.results -%}
+      {%- if lookup.stdout.split()[0] == hostvars[host].ansible_host -%}
+      {%- set _ = matches.append('node-' ~ lookup.item) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set _ = nodes.append({'item_id': hostvars[host].storage_item_id,
+        'hostname': host, 'alias': matches[0] if matches | length == 1 else '',
+        'pool_id': hostvars[host].storage_pool_id}) -%}
+      {%- endfor -%}
+      {{ nodes }}
+  when: inventory_hostname == rustfs_primary_host
+
+- name: Проверить однозначное восстановление псевдонимов
+  ansible.builtin.assert:
+    that:
+      - item.alias | length > 0
+      - not (storage_pools | default([]) | length > 0) or item.alias == hostvars[item.hostname].storage_alias
+    fail_msg: "Псевдоним узла {{ item.hostname }} не определён однозначно либо противоречит сохранённой топологии"
+  loop: "{{ hostvars[rustfs_primary_host].rustfs_observed_nodes }}"
+  run_once: true
+
+- name: Использовать подтверждённый псевдоним существующего узла
+  ansible.builtin.set_fact:
+    storage_alias: "{{ item.alias }}"
+  loop: "{{ hostvars[rustfs_primary_host].rustfs_observed_nodes }}"
+  when: item.hostname == inventory_hostname
+
+- name: Прочитать версии существующих серверов
+  ansible.builtin.command:
+    cmd: "{{ rustfs_bin_dir }}/rustfs --version"
+  register: _rustfs_existing_version
+  changed_when: false
+  when: inventory_hostname in hostvars[rustfs_primary_host].rustfs_existing_hosts
+
+- name: Проверить одинаковые версии существующих серверов
+  ansible.builtin.assert:
+    that:
+      - hostvars[item]._rustfs_existing_version.stdout_lines[0] == hostvars[rustfs_primary_host]._rustfs_existing_version.stdout_lines[0]
+    fail_msg: "Версии существующих серверов RustFS различаются"
+  loop: "{{ hostvars[rustfs_primary_host].rustfs_existing_hosts }}"
+  run_once: true

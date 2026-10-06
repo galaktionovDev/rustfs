@@ -1,0 +1,12 @@
+---
+- name: Дождаться готовности RustFS после применения конфигурации
+  ansible.builtin.uri:
+    url: "{{ rustfs_scheme | default('http') }}://{{ ansible_host | default(ansible_default_ipv4.address) }}:{{ rustfs_api_port }}/minio/health/{{ 'cluster' if rustfs_cluster_mode == 'High Availability' else 'ready' }}"
+    method: GET
+    status_code: 200
+    validate_certs: "{{ rustfs_validate_certificate }}"
+    timeout: 5
+  register: _storage_ready
+  retries: 30
+  delay: 3
+  until: _storage_ready.status | default(0) == 200

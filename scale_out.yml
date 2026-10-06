@@ -9,6 +9,8 @@
       ansible.builtin.assert:
         that:
           - rustfs_cluster_mode == 'High Availability'
+          - existing_nodes is defined
+          - (existing_nodes | length) > 0
         fail_msg: "Масштабирование кластера разрешено только в режиме High Availability."
 
     - name: Compute new nodes count from inventory
@@ -16,7 +18,7 @@
         rustfs_new_nodes_count: >-
           {{
             (groups[rustfs_cluster_nodes_group | default('node')] | default([]) | length)
-            - (rustfs_node_count | default(0) | int)
+            - (existing_nodes | length)
           }}
 
     - name: Validate new nodes count is 2..4
@@ -41,7 +43,7 @@
   hosts: "{{ rustfs_lb_group | default('lb') }}"
   become: true
   any_errors_fatal: true
-  
+
   tasks:
     - name: Rebuild HAProxy backends after scale-out
       ansible.builtin.include_role:
@@ -50,4 +52,3 @@
       when:
         - (lb_enabled | default(rustfs_enable_lb | default(false))) | bool
         - (groups[rustfs_lb_group | default('lb')] | default([])) | length > 0
-        

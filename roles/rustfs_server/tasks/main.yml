@@ -1,10 +1,4 @@
 ---
-- name: Собрать каталоги данных из дополнительных дисков
-  ansible.builtin.set_fact:
-    rustfs_server_datadirs: "{{ rustfs_extra_disks | map(attribute='mount') | list }}"
-  when: (rustfs_extra_disks | default([])) | length > 0
-  changed_when: false
-
 - name: Создать системную группу RustFS
   ansible.builtin.group:
     name: "{{ rustfs_group }}"
@@ -34,3 +28,7 @@
 
 - name: Опубликовать итоговые данные по установке RustFS для графа
   ansible.builtin.include_tasks: stats.yml
+
+- name: Опубликовать состояние дисков и топологии
+  ansible.builtin.include_tasks: storage_stats.yml
+  when: storage_disks is defined

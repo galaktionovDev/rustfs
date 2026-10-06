@@ -1,100 +1,244 @@
 ---
-# --- ШАГ 1: АВТООПРЕДЕЛЕНИЕ ТЕКУЩЕГО СОСТОЯНИЯ КЛАСТЕРА ---
-
-- name: Проверить, установлена ли уже служба RustFS на узлах
-  ansible.builtin.stat:
-    path: /etc/systemd/system/rustfs.service
-  register: _rustfs_service_check
-
-- name: Автоматически сформировать списки старых и новых хостов
-  run_once: true
-  vars:
-    _all_hosts: "{{ groups[rustfs_cluster_nodes_group | default('node')] | sort }}"
-    # Отбираем хосты, у которых файл службы уже существует
-    _existing_hosts: >-
-      {%- set existing = [] -%}
-      {%- for h in _all_hosts -%}
-      {%-   if hostvars[h]['_rustfs_service_check']['stat']['exists'] | default(false) -%}
-      {%-     set _ = existing.append(h) -%}
-      {%-   endif -%}
-      {%- endfor -%}
-      {{ existing }}
+- name: Выбрать основной существующий узел
   ansible.builtin.set_fact:
-    rustfs_all_hosts: "{{ _all_hosts }}"
-    rustfs_existing_hosts: "{{ _existing_hosts }}"
-    rustfs_new_hosts: "{{ _all_hosts | difference(_existing_hosts) | list }}"
-    rustfs_primary_host: "{{ _existing_hosts | first | default(_all_hosts | first) }}"
-
-- name: Проверить, что мы нашли новые узлы для добавления
+    rustfs_primary_host: "{{ existing_nodes | map(attribute='hostname') | list | first }}"
   run_once: true
+
+- name: Передать имя основного узла всем участникам
+  ansible.builtin.set_fact:
+    rustfs_primary_host: "{{ hostvars[ansible_play_hosts_all[0]].rustfs_primary_host }}"
+
+- name: Собрать состав кластера на основном узле
+  ansible.builtin.set_fact:
+    rustfs_all_hosts: "{{ groups[rustfs_cluster_nodes_group | default('node')] | list }}"
+    rustfs_existing_hosts: "{{ existing_nodes | map(attribute='hostname') | list }}"
+    rustfs_new_hosts: >-
+      {{ groups[rustfs_cluster_nodes_group | default('node')]
+         | difference(existing_nodes | map(attribute='hostname') | list) | list }}
+  when: inventory_hostname == rustfs_primary_host
+
+- name: Проверить существующие узлы до подготовки нового пула
+  ansible.builtin.include_tasks: scale_preflight.yml
+
+- name: Проверить контракт новых узлов
   ansible.builtin.assert:
     that:
-      - (hostvars[rustfs_primary_host].rustfs_new_hosts | length) > 0
-    fail_msg: "В инвентаре не найдено новых узлов. Все узлы уже содержат установленную службу RustFS."
+      - hostvars[item].storage_disks is defined
+      - hostvars[item].storage_item_id is defined
+      - hostvars[item].storage_alias is defined
+      - hostvars[item].storage_pool_id is defined
+      - hostvars[item].storage_node_index is defined
+      - (hostvars[item].storage_disks | length) > 0
+    fail_msg: "Для нового узла {{ item }} отсутствует полный контракт хранения"
+  loop: "{{ hostvars[rustfs_primary_host].rustfs_new_hosts }}"
+  run_once: true
 
-- name: Собрать карту дисков для всех узлов кластера
+- name: Проверить одинаковое число дисков в новом пуле
+  ansible.builtin.assert:
+    that:
+      - (hostvars[item].storage_disks | length) == (hostvars[hostvars[rustfs_primary_host].rustfs_new_hosts[0]].storage_disks | length)
+    fail_msg: "Все узлы нового пула должны иметь одинаковое число дисков"
+  loop: "{{ hostvars[rustfs_primary_host].rustfs_new_hosts }}"
+  run_once: true
+
+- name: Прочитать действующую конфигурацию кластера
+  ansible.builtin.slurp:
+    path: "{{ rustfs_etc_dir }}/rustfs.env"
+  register: _rustfs_current_env
   when: inventory_hostname == rustfs_primary_host
-  vars:
-    _all: "{{ rustfs_all_hosts | default([]) }}"
-  ansible.builtin.set_fact:
-    rustfs_drives_map: >-
-      {%- set m = {} -%}
-      {%- for h in _all -%}
-      {%-   set disks = hostvars[h].rustfs_extra_disks | default([]) | map(attribute='mount') | list -%}
-      {%-   set _ = m.update({ h: disks }) -%}
-      {%- endfor -%}
-      {{ m }}
+  no_log: true
 
-- name: Распределить вычисленные факты топологии по всем узлам кластера
+- name: Получить действующую строку endpoints и индексы новых узлов
+  ansible.builtin.set_fact:
+    rustfs_current_volumes: >-
+      {%- set content = (_rustfs_current_env.content | b64decode).splitlines() -%}
+      {%- set line = content | select('match', '^RUSTFS_VOLUMES=') | list | first | default('') -%}
+      {{ line | regex_replace('^RUSTFS_VOLUMES="(.*)"$', '\1') | regex_replace('^RUSTFS_VOLUMES=(.*)$', '\1') }}
+    rustfs_new_node_indexes: >-
+      {%- set indexes = [] -%}
+      {%- for host in rustfs_new_hosts -%}
+      {%- set _ = indexes.append(hostvars[host].storage_node_index | int) -%}
+      {%- endfor -%}
+      {{ indexes }}
+  when: inventory_hostname == rustfs_primary_host
+
+- name: Сформировать endpoints только новых узлов
+  ansible.builtin.set_fact:
+    rustfs_new_pool_volumes: >-
+      {{ (rustfs_scheme | default('http')) ~ '://node-{' ~ (rustfs_new_node_indexes | min)
+         ~ '...' ~ (rustfs_new_node_indexes | max) ~ '}:' ~ (rustfs_api_port | string)
+         ~ '/app/disk{1...' ~ (hostvars[rustfs_new_hosts[0]].storage_disks | length) ~ '}' }}
+  when: inventory_hostname == rustfs_primary_host
+
+- name: Запретить изменение топологии без действующих endpoints
+  ansible.builtin.assert:
+    that:
+      - hostvars[rustfs_primary_host].rustfs_current_volumes | length > 0
+    fail_msg: "В действующей конфигурации отсутствует RUSTFS_VOLUMES"
+  run_once: true
+
+- name: Построить полную топологию и новый пул
+  ansible.builtin.set_fact:
+    rustfs_runtime_pools: >-
+      {%- set base = [] -%}
+      {%- if storage_pools is defined and (storage_pools | length) > 0 -%}
+      {%- for pool in storage_pools -%}
+      {%- set saved = {} -%}
+      {%- set _ = saved.update(pool) -%}
+      {%- set _ = base.append(saved) -%}
+      {%- endfor -%}
+      {%- else -%}
+      {%- for pattern in rustfs_current_volumes.split() -%}
+      {%- if pattern != rustfs_new_pool_volumes -%}
+      {%- set host_ranges = pattern | regex_findall('node-\{([0-9]+)\.\.\.([0-9]+)\}') -%}
+      {%- set drive_ranges = pattern | regex_findall('/app/disk\{([0-9]+)\.\.\.([0-9]+)\}') -%}
+      {%- set pool_hosts = [] -%}
+      {%- if host_ranges | length == 1 -%}
+      {%- for node in rustfs_observed_nodes -%}
+      {%- set index = node['alias'].split('-')[-1] | int -%}
+      {%- if index >= (host_ranges[0][0] | int) and index <= (host_ranges[0][1] | int) -%}
+      {%- set _ = pool_hosts.append(node['hostname']) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {%- set drives = ((drive_ranges[0][1] | int) - (drive_ranges[0][0] | int) + 1) if drive_ranges | length == 1 else 1 -%}
+      {%- set _ = base.append({'id': 'pool-' ~ ((base | length) + 1), 'volumes': pattern,
+        'hosts': pool_hosts, 'drives_per_node': drives}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {%- set new_hosts = rustfs_new_hosts -%}
+      {%- set drives = hostvars[new_hosts[0]].storage_disks | length -%}
+      {%- set pool_id = 'pool-' ~ ((base | length) + 1) -%}
+      {%- set _ = base.append({'id': pool_id, 'volumes': rustfs_new_pool_volumes,
+        'hosts': new_hosts, 'drives_per_node': drives}) -%}
+      {{ base }}
+  when: inventory_hostname == rustfs_primary_host
+
+- name: Сформировать подтверждённый состав узлов по пулам
+  ansible.builtin.set_fact:
+    rustfs_storage_nodes: >-
+      {%- set nodes = [] -%}
+      {%- for node in rustfs_observed_nodes -%}
+      {%- set saved = {} -%}
+      {%- set _ = saved.update(node) -%}
+      {%- for pool in rustfs_runtime_pools -%}
+      {%- if node['hostname'] in pool['hosts'] -%}
+      {%- set _ = saved.update({'pool_id': pool['id']}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set _ = nodes.append(saved) -%}
+      {%- endfor -%}
+      {%- for host in rustfs_new_hosts -%}
+      {%- set _ = nodes.append({'item_id': hostvars[host].storage_item_id,
+        'hostname': host, 'alias': hostvars[host].storage_alias,
+        'pool_id': rustfs_runtime_pools[-1]['id']}) -%}
+      {%- endfor -%}
+      {{ nodes }}
+  when: inventory_hostname == rustfs_primary_host
+
+- name: Проверить сохранение действующих endpoints при новом запуске или продолжении
+  ansible.builtin.assert:
+    that:
+      - _old_pools | length > 0
+      - hostvars[rustfs_primary_host].rustfs_current_volumes in [_old_volumes, _full_volumes]
+      - (_pool_hosts | sort) == (hostvars[rustfs_primary_host].rustfs_all_hosts | sort)
+      - (_pool_hosts | unique | length) == (_pool_hosts | length)
+      - (_pool_ids | unique | length) == (_pool_ids | length)
+    fail_msg: "Существующая топология противоречит описанию пулов; изменение кластера остановлено"
+  vars:
+    _pools: "{{ hostvars[rustfs_primary_host].rustfs_runtime_pools }}"
+    _old_pools: "{{ _pools[:-1] }}"
+    _old_volumes: "{{ _old_pools | map(attribute='volumes') | join(' ') }}"
+    _full_volumes: "{{ _pools | map(attribute='volumes') | join(' ') }}"
+    _pool_hosts: "{{ _pools | map(attribute='hosts') | flatten }}"
+    _pool_ids: "{{ _pools | map(attribute='id') | list }}"
+  run_once: true
+
+- name: Проверить описание каждого пула
+  ansible.builtin.assert:
+    that:
+      - item.hosts | length > 0
+      - item.drives_per_node | int > 0
+    fail_msg: "Не удалось однозначно восстановить состав {{ item.id }}"
+  loop: "{{ hostvars[rustfs_primary_host].rustfs_runtime_pools }}"
+  run_once: true
+
+- name: Проверить непрерывную нумерацию узлов нового пула
+  ansible.builtin.assert:
+    that:
+      - (_new_indexes | max) - (_new_indexes | min) + 1 == (_new_indexes | length)
+      - (_new_indexes | unique | length) == (_new_indexes | length)
+    fail_msg: "Индексы узлов нового пула должны образовывать непрерывный диапазон"
+  vars:
+    _new_indexes: "{{ hostvars[rustfs_primary_host].rustfs_new_node_indexes }}"
+  run_once: true
+
+- name: Распространить топологию на все узлы
   ansible.builtin.set_fact:
     rustfs_all_hosts: "{{ hostvars[rustfs_primary_host].rustfs_all_hosts }}"
     rustfs_existing_hosts: "{{ hostvars[rustfs_primary_host].rustfs_existing_hosts }}"
     rustfs_new_hosts: "{{ hostvars[rustfs_primary_host].rustfs_new_hosts }}"
-    rustfs_drives_map: "{{ hostvars[rustfs_primary_host].rustfs_drives_map }}"
+    rustfs_pools: "{{ hostvars[rustfs_primary_host].rustfs_runtime_pools }}"
+    rustfs_runtime_pools: "{{ hostvars[rustfs_primary_host].rustfs_runtime_pools }}"
+    rustfs_storage_nodes: "{{ hostvars[rustfs_primary_host].rustfs_storage_nodes }}"
 
-- name: Собрать пути к дата-дискам на новых узлах
+- name: Выбрать каталоги данных каждого узла
   ansible.builtin.set_fact:
-    rustfs_server_datadirs: "{{ rustfs_extra_disks | map(attribute='mount') | list }}"
-  when:
-    - inventory_hostname in (rustfs_new_hosts | default([]))
-    - (rustfs_extra_disks | default([])) | length > 0
+    rustfs_server_datadirs: >-
+      {%- if inventory_hostname in rustfs_new_hosts -%}
+      {{ storage_disks | map(attribute='mount') | list }}
+      {%- else -%}
+      {%- set mounts = [] -%}
+      {%- for pool in rustfs_runtime_pools -%}
+      {%- if inventory_hostname in pool['hosts'] -%}
+      {%- for index in range(1, (pool['drives_per_node'] | int) + 1) -%}
+      {%- set _ = mounts.append('/app/disk' ~ index) -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ mounts }}
+      {%- endif -%}
+  changed_when: false
 
-# --- ШАГ 2: РАБОТА С НОВЫМИ УЗЛАМИ ---
-
-- name: Установить серверную часть RustFS на новые узлы
+- name: Установить сервер на новые узлы
   ansible.builtin.include_tasks: install.yml
-  when: inventory_hostname in (rustfs_new_hosts | default([]))
+  when: inventory_hostname in rustfs_new_hosts
 
-- name: Подготовить локальные диски на новых узлах
+- name: Подготовить диски новых узлов
   ansible.builtin.include_tasks: prepare_disks.yml
-  when: inventory_hostname in (rustfs_new_hosts | default([]))
+  when: inventory_hostname in rustfs_new_hosts
 
-- name: Обновить локальный /etc/hosts на всех узлах кластера
+- name: Проверить существующие монтирования и версии новых серверов
+  ansible.builtin.include_tasks: scale_verify_existing.yml
+
+- name: Обновить адреса узлов на всём кластере
   ansible.builtin.include_tasks: rustfs_hosts.yml
-  when: inventory_hostname in (rustfs_all_hosts | default(ansible_play_hosts_all))
 
-# --- ШАГ 3: СИНХРОННЫЙ ПЕРЕЗАПУСК И ПРИМЕНЕНИЕ ТОПОЛОГИИ ---
-
-- name: Остановить службу RustFS на всём кластере для расширения
+- name: Остановить службу перед изменением топологии
   ansible.builtin.systemd:
     name: rustfs
     state: stopped
-  when: inventory_hostname in (rustfs_all_hosts | default(ansible_play_hosts_all))
-  ignore_errors: true
+  when: inventory_hostname in rustfs_existing_hosts
 
-- name: Применить обновлённую конфигурацию топологии на всех узлах
+- name: Включить автоматический запуск итоговой конфигурации
+  ansible.builtin.set_fact:
+    rustfs_autostart: true
+
+- name: Применить полную топологию на всех узлах
   ansible.builtin.include_tasks: configure.yml
-  when: inventory_hostname in (rustfs_all_hosts | default(ansible_play_hosts_all))
 
-- name: Запустить службу RustFS с новыми узлами
-  ansible.builtin.systemd:
-    name: rustfs
-    state: started
-  when: inventory_hostname in (rustfs_all_hosts | default(ansible_play_hosts_all))
+- name: Применить отложенные обработчики
+  ansible.builtin.meta: flush_handlers
 
-- name: Установить клиент утилиты rc на новые узлы
+- name: Проверить готовность расширенного кластера
+  ansible.builtin.include_tasks: wait_storage_ready.yml
+
+- name: Установить клиент на новых узлах
   ansible.builtin.include_role:
     name: rustfs_client
     tasks_from: install.yml
-  when: inventory_hostname in (rustfs_new_hosts | default([]))
-  
+  when: inventory_hostname in rustfs_new_hosts
+
+- name: Опубликовать результат масштабирования
+  ansible.builtin.include_tasks: scale_storage_stats.yml

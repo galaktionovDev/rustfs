@@ -13,6 +13,7 @@ rustfs_group: "rustfs"
 rustfs_preconf_data_devices: []
 rustfs_server_datadirs: []
 rustfs_extra_disks: []
+rustfs_require_storage_disks: false
 rustfs_preconf_wipe_disks: false
 rustfs_server_cluster_nodes: []
 rustfs_cluster_nodes_group: "node"
@@ -43,3 +44,4 @@ rustfs_log_level: "error"
 rustfs_console_enable: "true"
 
 rustfs_unsafe_bypass_disk_check: false
+rustfs_validate_certificate: false
