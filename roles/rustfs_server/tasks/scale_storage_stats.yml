@@ -9,9 +9,10 @@
 - name: Получить применённую строку endpoints
   ansible.builtin.set_fact:
     _scale_storage_volumes: >-
-      {{ ((_scale_storage_env.content | b64decode)
-          | regex_search('(?m)^RUSTFS_VOLUMES="([^"]+)"$', '\1')
-          | default([], true) | first) | default('') }}
+      {%- set lines = (_scale_storage_env.content | b64decode).splitlines() -%}
+      {%- set line = lines | select('match', '^RUSTFS_VOLUMES=') | list | first | default('') -%}
+      {{ line | regex_replace('^RUSTFS_VOLUMES="(.*)"$', '\1')
+         | regex_replace('^RUSTFS_VOLUMES=(.*)$', '\1') }}
     _scale_expected_volumes: "{{ rustfs_runtime_pools | map(attribute='volumes') | join(' ') }}"
   when: inventory_hostname == rustfs_primary_host
 
