@@ -9,10 +9,10 @@
 - name: Получить фактическую строку endpoints
   ansible.builtin.set_fact:
     _storage_volumes: >-
-      {%- set lines = (_storage_env.content | b64decode).splitlines() -%}
+      {%- set lines = (_storage_env.content | b64decode).splitlines() | map('trim') | list -%}
       {%- set line = lines | select('match', '^RUSTFS_VOLUMES=') | list | first | default('') -%}
-      {{ line | regex_replace('^RUSTFS_VOLUMES="(.*)"$', '\1')
-         | regex_replace('^RUSTFS_VOLUMES=(.*)$', '\1') }}
+      {%- set value = line | regex_replace('^RUSTFS_VOLUMES=', '') | trim -%}
+      {{ value | regex_replace('^"', '') | regex_replace('"$', '') }}
   run_once: true
 
 - name: Проверить наличие применённой топологии
